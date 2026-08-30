@@ -21,6 +21,7 @@
   .wrap{max-width:680px;margin:0 auto}
 
   header.top{text-align:center;padding:40px 0 8px}
+  .wordmark{font-family:var(--display);font-weight:700;font-size:clamp(34px,9vw,52px);line-height:.9;letter-spacing:.04em;color:var(--txt);text-transform:uppercase;display:inline-block;margin-bottom:14px}
   .kicker{font-family:var(--body);font-size:12px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
   h1{font-family:var(--display);font-weight:700;font-size:44px;line-height:1;letter-spacing:.01em;text-transform:uppercase;margin:10px 0 8px}
   .lead{color:var(--mut);font-size:16px;max-width:520px;margin:0 auto}
@@ -112,6 +113,7 @@
 <div class="wrap">
 
   <header class="top">
+    <div class="wordmark">TRT-GUY</div>
     <div class="kicker">Client Onboarding</div>
     <h1>Let's Build Your Plan</h1>
     <p class="lead">You're in. This is everything your coach needs to build your protocol and training around you. Takes about 8 minutes — be honest, it's between you and your coach.</p>
@@ -546,7 +548,7 @@ form.addEventListener('submit', async e=>{
 });
 
 // ---- Inline text editing (open with ?edit=1) ----
-const EDIT_SEL = '.kicker,.intro-h1,.lead,.sec-title,.sec-sub,.field > label,.field > .hint,.drop .t,.drop .s,.badge,#done .big,#done p,.footer';
+const EDIT_SEL = '.kicker,header.top h1,.lead,.sec-title,.sec-sub,.field > label,.field > .hint,.drop .t,.drop .s,.badge,#done .big,#done p,.footer';
 const editable = [...document.querySelectorAll(EDIT_SEL)];
 editable.forEach((el,i)=> el.setAttribute('data-edit','e'+i));
 const CONTENT_URL = WORKER_URL.replace(/\/+$/,'') + '/content';
