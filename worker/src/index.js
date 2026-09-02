@@ -54,7 +54,6 @@ const FIELD_IDS = {
   onboarding_photo_social_consent: '3KUszwuDAtNmdaOh5y97',
   onboarding_anything_else: 'omtl1MwKiEidJJ4Hu35F',
   onboarding_bloodwork_link: 'LEET16pP2xTKga6F9Wzy',
-  onboarding_instagram: 'gsyco9x3jwYCEgCJMvY1',
   onboarding_best_contact_method: 'g4fYT4guQ7DTafhK2sRS',
   onboarding_photo_front: 'Tr6vTGvfjIGMLAiOFMcs',
   onboarding_photo_side: 'tStH9wehxV8iJPtYAnaI',
@@ -355,11 +354,17 @@ export default {
       const contactId = out && out.contact && out.contact.id;
       if (!contactId) return json({ error: 'GHL upsert failed', details: out }, 502);
 
-      // Build the full Q&A transcript.
+      // Build the full Q&A transcript from EVERY submitted field, so questions
+      // added later in the editor flow through to email + Slack automatically.
+      // Known fields use their nice label; anything new is humanized from its name.
+      const labelMap = Object.fromEntries(LABELS);
+      const skipKeys = new Set(['firstName', 'units', 'bloodwork']);
       const lines = [];
-      for (const [k, label] of LABELS) {
-        const v = form.get(k);
-        if (v != null && v.toString().trim() !== '') lines.push(`${label}: ${v.toString().trim()}`);
+      for (const [k, v] of form) {
+        if (skipKeys.has(k) || k.indexOf('photo_') === 0) continue;
+        if (typeof v !== 'string' || v.trim() === '') continue;
+        const label = labelMap[k] || k.replace(/^onboarding_/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        lines.push(`${label}: ${v.trim()}`);
       }
       const media = [];
       if (poseUrls.front) media.push('Front photo: ' + poseUrls.front);
