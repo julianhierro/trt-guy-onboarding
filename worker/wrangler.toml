@@ -2,14 +2,17 @@ name = "trt-guy-onboarding"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
-# Uploaded photos + bloodwork live here.
-[[r2_buckets]]
-binding = "BUCKET"
-bucket_name = "trt-guy-onboarding"
+# Uploaded photos + bloodwork storage (R2). Disabled for the no-card deploy —
+# opt-ins + application don't need it. Re-enable (and `wrangler r2 bucket create
+# trt-guy-onboarding`) when turning on onboarding photo uploads.
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "trt-guy-onboarding"
 
 # Non-secret vars. The GHL token is set separately as a secret:
 #   wrangler secret put GHL_TOKEN
 [vars]
 LOCATION_ID = "WmcafLXT7njeQOu3fqlP"
 NOTIFY_EMAIL = "julian@trt-guy.com"
-EMAIL_FROM = "TRT Guy <admin@jackedvegans.com>"
+EMAIL_FROM = "TRT Guy <julian@trt-guy.com>"
+SUPABASE_URL = "https://nmxrdxkwfuxomytthmfj.supabase.co"

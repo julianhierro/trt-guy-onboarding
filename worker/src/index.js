@@ -53,6 +53,7 @@ const FIELD_IDS = {
   onboarding_job_activity: 'yyFyAZ7cMLz4D5LCvHQN',
   onboarding_photo_social_consent: '3KUszwuDAtNmdaOh5y97',
   onboarding_anything_else: 'omtl1MwKiEidJJ4Hu35F',
+  onboarding_bloodwork_link: 'LEET16pP2xTKga6F9Wzy',
   onboarding_best_contact_method: 'g4fYT4guQ7DTafhK2sRS',
   onboarding_photo_front: 'Tr6vTGvfjIGMLAiOFMcs',
   onboarding_photo_side: 'tStH9wehxV8iJPtYAnaI',
@@ -102,6 +103,7 @@ const LABELS = [
   ['onboarding_job_activity', 'Job / activity'],
   ['onboarding_photo_social_consent', 'Photo social consent'],
   ['onboarding_anything_else', 'Anything else'],
+  ['onboarding_bloodwork_link', 'Bloodwork link'],
   ['onboarding_best_contact_method', 'Best contact method'],
 ];
 
@@ -128,10 +130,23 @@ function ghl(env, method, path, body) {
   });
 }
 
+// Uploads to Supabase Storage (bucket "trt-onboarding") and returns a public URL.
+// The key stays server-side (worker secret); browsers only ever POST to this worker.
 async function storeFile(env, origin, prefix, file) {
   const key = `${prefix}/${crypto.randomUUID()}-${safeName(file.name)}`;
-  await env.BUCKET.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
-  return `${origin}/f/${key}`;
+  const bytes = await file.arrayBuffer();
+  const res = await fetch(`${env.SUPABASE_URL}/storage/v1/object/trt-onboarding/${key}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.SUPABASE_KEY}`,
+      'apikey': env.SUPABASE_KEY,
+      'Content-Type': file.type || 'application/octet-stream',
+      'x-upsert': 'true',
+    },
+    body: bytes,
+  });
+  if (!res.ok) throw new Error('storage upload failed ' + res.status + ': ' + (await res.text()).slice(0, 160));
+  return `${env.SUPABASE_URL}/storage/v1/object/public/trt-onboarding/${key}`;
 }
 
 export default {
@@ -142,6 +157,10 @@ export default {
 
     // Editable-text store: GET returns overrides JSON; POST (passcode) saves it.
     if (url.pathname === '/content') {
+      if (!env.BUCKET) {
+        if (request.method === 'GET') return new Response('{}', { headers: { ...CORS, 'Content-Type': 'application/json' } });
+        return json({ error: 'Editing storage not enabled yet (R2 off)' }, 503);
+      }
       if (request.method === 'GET') {
         const obj = await env.BUCKET.get('content.json');
         const text = obj ? await obj.text() : '{}';
@@ -158,6 +177,7 @@ export default {
 
     // Serve an uploaded file back (capability URL — unguessable key).
     if (request.method === 'GET' && url.pathname.startsWith('/f/')) {
+      if (!env.BUCKET) return new Response('Not found', { status: 404 });
       const key = decodeURIComponent(url.pathname.slice(3));
       const obj = await env.BUCKET.get(key);
       if (!obj) return new Response('Not found', { status: 404 });
@@ -166,6 +186,107 @@ export default {
       h.set('Cache-Control', 'private, max-age=31536000');
       h.set('Content-Disposition', 'inline');
       return new Response(obj.body, { headers: h });
+    }
+
+    // Simple opt-in capture for the TRT-101 and coaching-waitlist pages.
+    if (url.pathname === '/optin') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+      const d = await request.json().catch(() => ({}));
+      const email = (d.email || '').toString().trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: 'A valid email is required' }, 400);
+      const LISTS = {
+        'trt-101': { tag: 'trt-101', source: 'TRT 101 Opt-in' },
+        'coaching-waitlist': { tag: 'coaching-waitlist', source: 'Coaching Waitlist' },
+      };
+      const cfg = LISTS[d.list] || { tag: 'lead', source: 'TRT Guy' };
+      const up = await ghl(env, 'POST', '/contacts/upsert', {
+        locationId: env.LOCATION_ID,
+        email,
+        firstName: (d.firstName || d.name || '').toString().trim(),
+        phone: (d.phone || '').toString().trim(),
+        source: cfg.source,
+        tags: ['trt-guy', cfg.tag],
+      });
+      const o = await up.json();
+      const cid = o && o.contact && o.contact.id;
+      if (!cid) return json({ error: 'GHL upsert failed', details: o }, 502);
+      return json({ success: true, contactId: cid });
+    }
+
+    // Coaching application (step 2 after the waitlist opt-in).
+    if (url.pathname === '/application') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+      const d = await request.json().catch(() => ({}));
+      const email = (d.email || '').toString().trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: 'A valid email is required' }, 400);
+      const APP = [
+        ['instagram', 'Instagram handle', 'gsyco9x3jwYCEgCJMvY1'],
+        ['based', 'Where are you based', 'PknI0vXROFIeWfCdux1x'],
+        ['short_term_goals', 'Short-term goals', 'pWoA3fY8kJcuZibYQ43n'],
+        ['long_term_goals', 'Long-term goals', 'CnfDcPRNsW0BLYZPyyRt'],
+        ['on_trt', 'On TRT / thinking about it', 'xxhb7HMca5Okk3gCbwOs'],
+        ['trt_protocol', 'Current TRT protocol', '4lLXxSHJqWbXyCVgf7MM'],
+        ['ever_used_steroids', 'Ever used steroids', 'QkKJ8nc32jVC0jzZ7t6S'],
+        ['on_cycle_now', 'Currently on a cycle', 'qUAfgqODKeM9VQ5wn5Fy'],
+        ['cycle_describe', 'Current cycle (described)', 'M0iNIa5TEZ7ev3MN5ntS'],
+        ['investment_ready', 'Willing to invest significantly', 'ZDOG2Rfb8e7Ynwhwyomb'],
+        ['ready_to_start', 'When would you start', 'HVGtf4eRQRATvalN4Yfb'],
+        ['decision_maker', 'Financial decision maker', 'QrCNqO0fAoGZNd8e9x7D'],
+        ['why_now_vs_wait', 'Why now vs waiting 1-2 months', '1rOd8pBztwro2hiklQEp'],
+        ['biggest_struggle', 'Biggest struggle', 'zAgPdBVxY72yreuTI286'],
+        ['wants_from_coaching', 'What they want from coaching', 'ydPPsiNnJ4H95JG12nlt'],
+        ['help_accomplish', 'Anything else I should know', 'gLMxGi5wAVAca0J78lGc'],
+      ];
+      const customFields = [];
+      for (const [k, , id] of APP) { const v = d[k]; if (v != null && v.toString().trim() !== '') customFields.push({ id, value: v.toString() }); }
+      const up = await ghl(env, 'POST', '/contacts/upsert', {
+        locationId: env.LOCATION_ID, email,
+        firstName: (d.firstName || '').toString().trim(), phone: (d.phone || '').toString().trim(),
+        source: 'Coaching Application', tags: ['trt-guy', 'coaching-waitlist', 'coaching-application'], customFields,
+      });
+      const o = await up.json(); const cid = o && o.contact && o.contact.id;
+      if (!cid) return json({ error: 'GHL upsert failed', details: o }, 502);
+      const clientName = (d.firstName || email);
+      // Prefer the live question wording the page sends (so edited questions transcribe as edited);
+      // fall back to the built-in labels. Custom-field values above always map by id regardless.
+      const lines = (Array.isArray(d.qa) && d.qa.length)
+        ? d.qa.filter(x => x && x.a != null && x.a.toString().trim() !== '').map(x => `${(x.q || '').toString().trim()}: ${x.a}`)
+        : APP.map(([k, label]) => { const v = d[k]; return (v && v.toString().trim()) ? `${label}: ${v}` : null; }).filter(Boolean);
+      const transcript = `TRT GUY — COACHING APPLICATION\nName: ${clientName}\nEmail: ${email}\nPhone: ${(d.phone || '').toString()}\n\n` + lines.join('\n');
+      try { await ghl(env, 'POST', `/contacts/${cid}/notes`, { body: transcript }); } catch (e) {}
+      // Slack notification (Incoming Webhook) — no-op until the SLACK_WEBHOOK secret is set.
+      if (env.SLACK_WEBHOOK) {
+        try {
+          const ig = (d.instagram || '').toString().trim();
+          const body = lines.join('\n');
+          const blk = body.length > 2800 ? body.slice(0, 2800) + '\n…(truncated — full answers in email/GHL)' : body;
+          await fetch(env.SLACK_WEBHOOK, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: 'Money Bot',
+              icon_emoji: ':moneybag:',
+              text: `${env.SLACK_MENTION || '<@U0BTQAGV85A>'} New coaching application: ${clientName}`,
+              blocks: [
+                { type: 'header', text: { type: 'plain_text', text: '💰 New coaching application' } },
+                { type: 'section', fields: [
+                  { type: 'mrkdwn', text: `*Name:*\n${clientName}` },
+                  { type: 'mrkdwn', text: `*Email:*\n${email}` },
+                  { type: 'mrkdwn', text: `*Phone:*\n${(d.phone || '—').toString()}` },
+                  { type: 'mrkdwn', text: `*Instagram:*\n${ig || '—'}` },
+                ] },
+                { type: 'section', text: { type: 'mrkdwn', text: '```' + blk + '```' } },
+              ],
+            }),
+          });
+        } catch (e) {}
+      }
+      try {
+        const notify = env.NOTIFY_EMAIL || 'julian@trt-guy.com';
+        const ir = await ghl(env, 'POST', '/contacts/upsert', { locationId: env.LOCATION_ID, email: notify, firstName: 'TRT Guy', lastName: 'Onboarding Notifications', tags: ['internal-notify'] });
+        const ij = await ir.json(); const nid = ij && ij.contact && ij.contact.id;
+        if (nid) await ghl(env, 'POST', '/conversations/messages', { type: 'Email', contactId: nid, subject: `New coaching application: ${clientName}`, html: `<h2>New coaching application — ${esc(clientName)}</h2><pre style="white-space:pre-wrap;font-family:Arial">${esc(transcript)}</pre>`, emailFrom: (env.EMAIL_FROM || 'TRT Guy <julian@trt-guy.com>') });
+      } catch (e) {}
+      return json({ success: true, contactId: cid });
     }
 
     if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
@@ -181,15 +302,24 @@ export default {
       const firstName = (form.get('firstName') || '').toString().trim();
       const clientName = firstName || email;
 
-      // Upload the three pose photos + bloodwork to R2.
+      // Upload the three pose photos + bloodwork to Supabase Storage.
       const poseUrls = {};
-      for (const pose of ['front', 'side', 'back']) {
-        const f = form.get('photo_' + pose);
-        if (f && typeof f === 'object' && f.size > 0) poseUrls[pose] = await storeFile(env, origin, 'photos/' + pose, f);
-      }
       const bloodUrls = [];
-      for (const f of form.getAll('bloodwork')) {
-        if (f && typeof f === 'object' && f.size > 0) bloodUrls.push(await storeFile(env, origin, 'bloodwork', f));
+      const uploadErrors = [];
+      if (env.SUPABASE_URL && env.SUPABASE_KEY) {
+        for (const pose of ['front', 'side', 'back']) {
+          const f = form.get('photo_' + pose);
+          if (f && typeof f === 'object' && f.size > 0) {
+            try { poseUrls[pose] = await storeFile(env, origin, 'photos/' + pose, f); }
+            catch (e) { uploadErrors.push(pose + ': ' + e.message); }
+          }
+        }
+        for (const f of form.getAll('bloodwork')) {
+          if (f && typeof f === 'object' && f.size > 0) {
+            try { bloodUrls.push(await storeFile(env, origin, 'bloodwork', f)); }
+            catch (e) { uploadErrors.push('bloodwork: ' + e.message); }
+          }
+        }
       }
 
       // Custom fields from every onboarding_* answer present.
@@ -240,6 +370,32 @@ export default {
         noteOk = nr.ok;
       } catch (e) {}
 
+      // Slack notification → #onboarding-forms (its own webhook; falls back to the applications one).
+      const ONBOARD_HOOK = env.SLACK_WEBHOOK_ONBOARDING || env.SLACK_WEBHOOK;
+      if (ONBOARD_HOOK) {
+        try {
+          const oemail = (form.get('email') || '').toString().trim();
+          const body = lines.join('\n') + (media.length ? '\n\nMEDIA:\n' + media.join('\n') : '');
+          const blk = body.length > 2800 ? body.slice(0, 2800) + '\n…(truncated — full answers in email/GHL)' : body;
+          await fetch(ONBOARD_HOOK, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              username: 'Money Bot',
+              icon_emoji: ':moneybag:',
+              text: `${env.SLACK_MENTION || '<@U0BTQAGV85A>'} New client onboarding: ${clientName}`,
+              blocks: [
+                { type: 'header', text: { type: 'plain_text', text: '💰 New client onboarding' } },
+                { type: 'section', fields: [
+                  { type: 'mrkdwn', text: `*Name:*\n${clientName}` },
+                  { type: 'mrkdwn', text: `*Email:*\n${oemail || '—'}` },
+                ] },
+                { type: 'section', text: { type: 'mrkdwn', text: '```' + blk + '```' } },
+              ],
+            }),
+          });
+        } catch (e) {}
+      }
+
       // 3) Email the answers to the internal notify address (via a dedicated internal contact).
       let emailOk = false;
       try {
@@ -258,13 +414,13 @@ export default {
           const er = await ghl(env, 'POST', '/conversations/messages', {
             type: 'Email', contactId: notifyId,
             subject: `New TRT Guy onboarding: ${clientName}`,
-            html, emailFrom: (env.EMAIL_FROM || 'TRT Guy <admin@jackedvegans.com>'),
+            html, emailFrom: (env.EMAIL_FROM || 'TRT Guy <julian@trt-guy.com>'),
           });
           emailOk = er.ok;
         }
       } catch (e) {}
 
-      return json({ success: true, contactId, note: noteOk, emailed: emailOk, photos: Object.keys(poseUrls).length, bloodwork: bloodUrls.length });
+      return json({ success: true, contactId, note: noteOk, emailed: emailOk, photos: Object.keys(poseUrls).length, bloodwork: bloodUrls.length, uploadErrors });
     } catch (err) {
       return json({ error: err.message }, 500);
     }
