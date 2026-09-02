@@ -54,6 +54,7 @@ const FIELD_IDS = {
   onboarding_photo_social_consent: '3KUszwuDAtNmdaOh5y97',
   onboarding_anything_else: 'omtl1MwKiEidJJ4Hu35F',
   onboarding_bloodwork_link: 'LEET16pP2xTKga6F9Wzy',
+  onboarding_instagram: 'gsyco9x3jwYCEgCJMvY1',
   onboarding_best_contact_method: 'g4fYT4guQ7DTafhK2sRS',
   onboarding_photo_front: 'Tr6vTGvfjIGMLAiOFMcs',
   onboarding_photo_side: 'tStH9wehxV8iJPtYAnaI',
@@ -104,6 +105,7 @@ const LABELS = [
   ['onboarding_photo_social_consent', 'Photo social consent'],
   ['onboarding_anything_else', 'Anything else'],
   ['onboarding_bloodwork_link', 'Bloodwork link'],
+  ['onboarding_instagram', 'Instagram'],
   ['onboarding_best_contact_method', 'Best contact method'],
 ];
 
@@ -300,6 +302,11 @@ export default {
         return json({ error: 'A valid email is required' }, 400);
       }
       const firstName = (form.get('firstName') || '').toString().trim();
+      // Prefer the full name they typed; split into first/last for the contact record.
+      const fullName = (form.get('onboarding_full_name') || '').toString().trim();
+      const _np = fullName ? fullName.split(/\s+/) : [];
+      const nameFirst = _np.length ? _np.shift() : firstName;
+      const nameLast = _np.join(' ');
       const clientName = firstName || email;
 
       // Upload the three pose photos + bloodwork to Supabase Storage.
@@ -337,7 +344,8 @@ export default {
       const upsert = await ghl(env, 'POST', '/contacts/upsert', {
         locationId: env.LOCATION_ID,
         email,
-        firstName,
+        firstName: nameFirst,
+        lastName: nameLast,
         phone: (form.get('phone') || '').toString().trim(),
         source: 'TRT Guy Onboarding',
         tags: ['trt-guy', 'client-onboarded'],
