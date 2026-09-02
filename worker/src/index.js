@@ -290,6 +290,157 @@ export default {
       return json({ success: true, contactId: cid });
     }
 
+    // ── /assessment ── "Initial Client Consultation" (onboarding questionnaire v2).
+    // Free-form: the page sends a live qa:[{q,a}] array built from its own (editable)
+    // labels, so there are no per-question GHL custom fields to keep in sync. Every
+    // answer lands in the contact Note, the notify email and Slack.
+    if (url.pathname === '/assessment') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+      try {
+        const form = await request.formData();
+        const origin = url.origin;
+
+        const email = (form.get('email') || '').toString().trim();
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: 'A valid email is required' }, 400);
+
+        const fullName = (form.get('name') || form.get('firstName') || '').toString().trim();
+        const parts = fullName ? fullName.split(/\s+/) : [];
+        const nameFirst = parts.length ? parts.shift() : '';
+        const nameLast = parts.join(' ');
+        const clientName = fullName || email;
+
+        // Uploads: three pose photos, bloodwork, and the four lift videos.
+        const poseUrls = {}; const bloodUrls = []; const videoUrls = []; const uploadErrors = [];
+        if (env.SUPABASE_URL && env.SUPABASE_KEY) {
+          for (const pose of ['front', 'side', 'back']) {
+            const f = form.get('photo_' + pose);
+            if (f && typeof f === 'object' && f.size > 0) {
+              try { poseUrls[pose] = await storeFile(env, origin, 'v2/photos/' + pose, f); }
+              catch (e) { uploadErrors.push(pose + ': ' + e.message); }
+            }
+          }
+          for (const f of form.getAll('bloodwork')) {
+            if (f && typeof f === 'object' && f.size > 0) {
+              try { bloodUrls.push(await storeFile(env, origin, 'v2/bloodwork', f)); }
+              catch (e) { uploadErrors.push('bloodwork: ' + e.message); }
+            }
+          }
+          for (const f of form.getAll('videos')) {
+            if (f && typeof f === 'object' && f.size > 0) {
+              try { videoUrls.push(await storeFile(env, origin, 'v2/videos', f)); }
+              catch (e) { uploadErrors.push('video: ' + e.message); }
+            }
+          }
+        }
+
+        let qa = [];
+        try { qa = JSON.parse((form.get('qa') || '[]').toString()); } catch (e) {}
+        if (!Array.isArray(qa)) qa = [];
+        const lines = qa
+          .filter(x => x && x.a != null && x.a.toString().trim() !== '')
+          .map(x => `${(x.q || '').toString().trim()}\n  ${x.a.toString().trim().replace(/\n/g, '\n  ')}`);
+
+        const media = [];
+        if (poseUrls.front) media.push('Front photo: ' + poseUrls.front);
+        if (poseUrls.side) media.push('Side photo: ' + poseUrls.side);
+        if (poseUrls.back) media.push('Back photo: ' + poseUrls.back);
+        if (bloodUrls.length) media.push('Bloodwork: ' + bloodUrls.join('  |  '));
+        if (videoUrls.length) media.push('Lift videos: ' + videoUrls.join('  |  '));
+
+        const transcript =
+          `TRT GUY — INITIAL CLIENT CONSULTATION\nName: ${clientName}\nEmail: ${email}\nPhone: ${(form.get('phone') || '').toString()}\n\n` +
+          lines.join('\n\n') +
+          (media.length ? '\n\nMEDIA:\n' + media.join('\n') : '');
+
+        // 1) Upsert the contact. Photo/bloodwork links reuse the existing onboarding fields.
+        const customFields = [];
+        if (poseUrls.front) customFields.push({ id: FIELD_IDS.onboarding_photo_front, value: poseUrls.front });
+        if (poseUrls.side) customFields.push({ id: FIELD_IDS.onboarding_photo_side, value: poseUrls.side });
+        if (poseUrls.back) customFields.push({ id: FIELD_IDS.onboarding_photo_back, value: poseUrls.back });
+        if (bloodUrls.length) customFields.push({ id: FIELD_IDS.onboarding_bloodwork_link, value: bloodUrls.join(' | ') });
+
+        const upsert = await ghl(env, 'POST', '/contacts/upsert', {
+          locationId: env.LOCATION_ID, email,
+          firstName: nameFirst, lastName: nameLast,
+          phone: (form.get('phone') || '').toString().trim(),
+          source: 'TRT Guy Initial Consultation',
+          tags: ['trt-guy', 'client-onboarded', 'assessment-v2'],
+          customFields,
+        });
+        const out = await upsert.json();
+        const contactId = out && out.contact && out.contact.id;
+        if (!contactId) return json({ error: 'GHL upsert failed', details: out }, 502);
+
+        // 2) Full transcript as a Note (GHL notes cap out, so split into chunks).
+        let noteOk = false;
+        try {
+          const CHUNK = 7000;
+          if (transcript.length <= CHUNK) {
+            const nr = await ghl(env, 'POST', `/contacts/${contactId}/notes`, { body: transcript });
+            noteOk = nr.ok;
+          } else {
+            const total = Math.ceil(transcript.length / CHUNK);
+            noteOk = true;
+            for (let i = 0; i < total; i++) {
+              const nr = await ghl(env, 'POST', `/contacts/${contactId}/notes`, {
+                body: `[Consultation ${i + 1}/${total}]\n` + transcript.slice(i * CHUNK, (i + 1) * CHUNK),
+              });
+              if (!nr.ok) noteOk = false;
+            }
+          }
+        } catch (e) {}
+
+        // 3) Slack → #onboarding-forms.
+        const HOOK = env.SLACK_WEBHOOK_ONBOARDING || env.SLACK_WEBHOOK;
+        if (HOOK) {
+          try {
+            const body = lines.join('\n\n') + (media.length ? '\n\nMEDIA:\n' + media.join('\n') : '');
+            const blk = body.length > 2800 ? body.slice(0, 2800) + '\n…(truncated — full answers in email/GHL)' : body;
+            await fetch(HOOK, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: 'Money Bot', icon_emoji: ':clipboard:',
+                text: `${env.SLACK_MENTION || '<@U0BTQAGV85A>'} New client consultation: ${clientName}`,
+                blocks: [
+                  { type: 'header', text: { type: 'plain_text', text: '📋 New client consultation' } },
+                  { type: 'section', fields: [
+                    { type: 'mrkdwn', text: `*Name:*\n${clientName}` },
+                    { type: 'mrkdwn', text: `*Email:*\n${email}` },
+                  ] },
+                  { type: 'section', text: { type: 'mrkdwn', text: '```' + blk + '```' } },
+                ],
+              }),
+            });
+          } catch (e) {}
+        }
+
+        // 4) Email the answers to the internal notify address.
+        let emailOk = false;
+        try {
+          const notify = (env.NOTIFY_EMAIL || 'julian@trt-guy.com');
+          const ir = await ghl(env, 'POST', '/contacts/upsert', {
+            locationId: env.LOCATION_ID, email: notify, firstName: 'TRT Guy', lastName: 'Onboarding Notifications',
+            tags: ['internal-notify'], source: 'TRT Guy Initial Consultation',
+          });
+          const ij = await ir.json();
+          const notifyId = ij && ij.contact && ij.contact.id;
+          if (notifyId) {
+            const er = await ghl(env, 'POST', '/conversations/messages', {
+              type: 'Email', contactId: notifyId,
+              subject: `New TRT Guy consultation: ${clientName}`,
+              html: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5"><h2>New consultation — ${esc(clientName)}</h2><pre style="white-space:pre-wrap;font-family:Arial,sans-serif;font-size:14px">${esc(transcript)}</pre></div>`,
+              emailFrom: (env.EMAIL_FROM || 'TRT Guy <julian@trt-guy.com>'),
+            });
+            emailOk = er.ok;
+          }
+        } catch (e) {}
+
+        return json({ success: true, contactId, note: noteOk, emailed: emailOk, answers: lines.length, photos: Object.keys(poseUrls).length, bloodwork: bloodUrls.length, videos: videoUrls.length, uploadErrors });
+      } catch (err) {
+        return json({ error: err.message }, 500);
+      }
+    }
+
     if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
     try {
