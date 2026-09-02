@@ -306,7 +306,7 @@ export default {
       const _np = fullName ? fullName.split(/\s+/) : [];
       const nameFirst = _np.length ? _np.shift() : firstName;
       const nameLast = _np.join(' ');
-      const clientName = firstName || email;
+      const clientName = fullName || firstName || email;
 
       // Upload the three pose photos + bloodwork to Supabase Storage.
       const poseUrls = {};
