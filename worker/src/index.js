@@ -603,10 +603,18 @@ export default {
       }
 
       const pairs = (Array.isArray(d.qa) ? d.qa : [])
-        .map(p => ({ q: String((p && p.q) || '').slice(0, 500), a: String((p && p.a) || '').slice(0, 3000) }))
+        .map(p => ({ q: String((p && p.q) || '').slice(0, 500), a: String((p && p.a) || '').slice(0, 5000) }))
         .filter(p => p.q && p.a);
       const transcript = 'TRT GUY — Audience Survey\n\n' + pairs.map(p => `${p.q}\n→ ${p.a}`).join('\n\n');
-      ctx.waitUntil(ghl(env, 'POST', `/contacts/${cid}/notes`, { body: transcript.slice(0, 7000) }).catch(() => {}));
+      // Open-ended answers can run long, so split across notes instead of cutting off.
+      const chunks = [];
+      for (let i = 0; i < transcript.length && chunks.length < 6; i += 7000) chunks.push(transcript.slice(i, i + 7000));
+      ctx.waitUntil((async () => {
+        for (let i = 0; i < chunks.length; i++) {
+          const head = chunks.length > 1 ? `(part ${i + 1} of ${chunks.length})\n` : '';
+          try { await ghl(env, 'POST', `/contacts/${cid}/notes`, { body: head + chunks[i] }); } catch (e) {}
+        }
+      })());
       return json({ success: true, contactId: cid, tags });
     }
 
