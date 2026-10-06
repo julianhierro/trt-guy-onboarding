@@ -468,6 +468,66 @@ export default {
       return json({ error: 'Method not allowed' }, 405);
     }
 
+    // Meta Conversions API. The browser pixel fires the same conversion with the
+    // same event_id; Meta matches the pair and counts it once, keeping whichever
+    // arrives — which matters because ad blockers and iPhones stop the browser
+    // copy on 20-40% of people. Nothing here can break a lead: it is its own
+    // route, it never throws, and it no-ops until META_CAPI_TOKEN is set.
+    if (url.pathname === '/capi') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+      if (!env.META_CAPI_TOKEN || !env.META_PIXEL_ID) return json({ ok: true, skipped: 'not configured' });
+      try {
+        const d = await request.json().catch(() => ({}));
+        if (!d.event) return json({ error: 'event required' }, 400);
+
+        // Meta matches on hashes, so normalise first — a stray capital or space
+        // produces a hash that matches nobody and the data is silently wasted.
+        const sha256 = async v => {
+          if (v == null || v === '') return undefined;
+          const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(v)));
+          return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+        };
+        const text = v => (v == null ? '' : String(v).trim().toLowerCase()) || undefined;
+        // E.164 digits only. A number without a country code cannot be matched.
+        const phone = v => { const n = String(v || '').replace(/\D/g, ''); return n.length >= 10 ? n : undefined; };
+
+        const user_data = {
+          em: await sha256(text(d.email)),
+          ph: await sha256(phone(d.phone)),
+          fn: await sha256(text(d.first_name)),
+          // these four are matched raw — hashing them makes them useless
+          fbp: d.fbp || undefined,
+          fbc: d.fbc || undefined,
+          external_id: d.external_id || undefined,
+          client_ip_address: request.headers.get('CF-Connecting-IP') || undefined,
+          client_user_agent: request.headers.get('User-Agent') || undefined,
+        };
+        for (const k of Object.keys(user_data)) if (user_data[k] === undefined) delete user_data[k];
+
+        const body = {
+          data: [{
+            event_name: String(d.event),
+            event_time: Math.floor(Date.now() / 1000),
+            event_id: String(d.event_id || crypto.randomUUID()),
+            action_source: 'website',
+            event_source_url: d.source_url || undefined,
+            user_data,
+            custom_data: d.custom && typeof d.custom === 'object' ? d.custom : {},
+          }],
+          access_token: env.META_CAPI_TOKEN,
+        };
+        if (env.META_TEST_EVENT_CODE) body.test_event_code = env.META_TEST_EVENT_CODE;
+
+        const r = await fetch(`https://graph.facebook.com/v24.0/${env.META_PIXEL_ID}/events`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const out = await r.json().catch(() => ({}));
+        return json({ ok: r.ok, meta: out }, r.ok ? 200 : 502);
+      } catch (e) {
+        return json({ ok: false, error: e.message });
+      }
+    }
+
     // The client page's own wording, edited in the manager. Public on purpose:
     // it is labels, not client data, and every client page needs it before login.
     if (url.pathname === '/client-copy') {
