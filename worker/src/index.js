@@ -725,6 +725,8 @@ export default {
         'trt-101': { tag: 'trt-101', source: 'TRT 101 Opt-in' },
         'coaching-waitlist': { tag: 'coaching-waitlist', source: 'Coaching Waitlist' },
         'my-protocol': { tag: 'my-protocol', source: 'My Protocol' },
+        // Spanish waitlist — capture only, no guide is delivered yet.
+        'trt-101-es': { tag: 'trt-101-es', source: 'Lista de espera TRT 101 (ES)' },
       };
       const cfg = LISTS[d.list] || { tag: 'lead', source: 'TRT Guy' };
       const up = await ghl(env, 'POST', '/contacts/upsert', {
