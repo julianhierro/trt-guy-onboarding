@@ -490,11 +490,31 @@ export default {
         const text = v => (v == null ? '' : String(v).trim().toLowerCase()) || undefined;
         // E.164 digits only. A number without a country code cannot be matched.
         const phone = v => { const n = String(v || '').replace(/\D/g, ''); return n.length >= 10 ? n : undefined; };
+        // The application asks for a country by name; Meta matches on the 2-letter
+        // code. Anything not on this list is sent as nothing rather than as a guess.
+        const ISO = { 'united states': 'us', 'canada': 'ca', 'united kingdom': 'gb', 'australia': 'au',
+          'new zealand': 'nz', 'ireland': 'ie', 'germany': 'de', 'switzerland': 'ch', 'austria': 'at',
+          'netherlands': 'nl', 'belgium': 'be', 'luxembourg': 'lu', 'france': 'fr', 'spain': 'es',
+          'portugal': 'pt', 'italy': 'it', 'greece': 'gr', 'sweden': 'se', 'norway': 'no',
+          'denmark': 'dk', 'finland': 'fi', 'iceland': 'is', 'poland': 'pl', 'czechia': 'cz',
+          'slovakia': 'sk', 'slovenia': 'si', 'croatia': 'hr', 'serbia': 'rs', 'romania': 'ro',
+          'bulgaria': 'bg', 'hungary': 'hu', 'estonia': 'ee', 'latvia': 'lv', 'lithuania': 'lt',
+          'malta': 'mt', 'cyprus': 'cy', 'turkey': 'tr', 'israel': 'il', 'united arab emirates': 'ae',
+          'saudi arabia': 'sa', 'qatar': 'qa', 'kuwait': 'kw', 'bahrain': 'bh', 'oman': 'om',
+          'japan': 'jp', 'singapore': 'sg', 'south korea': 'kr', 'china': 'cn', 'india': 'in',
+          'pakistan': 'pk', 'philippines': 'ph', 'indonesia': 'id', 'malaysia': 'my',
+          'thailand': 'th', 'vietnam': 'vn', 'south africa': 'za', 'nigeria': 'ng', 'kenya': 'ke',
+          'egypt': 'eg', 'morocco': 'ma', 'mexico': 'mx', 'brazil': 'br', 'argentina': 'ar',
+          'chile': 'cl', 'colombia': 'co', 'peru': 'pe', 'ecuador': 'ec', 'uruguay': 'uy',
+          'paraguay': 'py', 'bolivia': 'bo', 'venezuela': 've', 'costa rica': 'cr', 'panama': 'pa',
+          'guatemala': 'gt', 'dominican republic': 'do', 'puerto rico': 'pr' };
+        const iso = v => ISO[String(v || '').trim().toLowerCase()];
 
         const user_data = {
           em: await sha256(text(d.email)),
           ph: await sha256(phone(d.phone)),
           fn: await sha256(text(d.first_name)),
+          country: await sha256(iso(d.country)),
           // these four are matched raw — hashing them makes them useless
           fbp: d.fbp || undefined,
           fbc: d.fbc || undefined,
