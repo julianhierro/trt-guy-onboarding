@@ -543,6 +543,12 @@ export default {
         });
         const out = await r.json().catch(() => ({}));
 
+        // ?debug=1 echoes back what was sent, minus the token, for setup checks.
+        if (url.searchParams.get('debug') === '1') {
+          const shown = JSON.parse(JSON.stringify(body)); delete shown.access_token;
+          return json({ ok: r.ok, meta: out, sent: shown });
+        }
+
         /* The TRT 101 opt-in posts to the Vercel proxy, not to /optin, so its emails
            never reached tg_optins and the funnel dashboard was counting a fraction of
            the real number — which made cost per email look worse than it is. The Lead
