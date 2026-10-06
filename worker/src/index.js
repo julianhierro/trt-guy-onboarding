@@ -542,6 +542,18 @@ export default {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
         const out = await r.json().catch(() => ({}));
+
+        /* The TRT 101 opt-in posts to the Vercel proxy, not to /optin, so its emails
+           never reached tg_optins and the funnel dashboard was counting a fraction of
+           the real number — which made cost per email look worse than it is. The Lead
+           event carries the same address, so log it here. Deduped on email by the RPC. */
+        if (String(d.event) === 'Lead' && d.email) {
+          await logFunnel(env, 'funnel_log_optin', {
+            email: String(d.email).trim().toLowerCase(),
+            list: (d.custom && d.custom.content_name) === 'TRT 101 Guide' ? 'trt-101' : 'lead',
+          });
+        }
+
         return json({ ok: r.ok, meta: out }, r.ok ? 200 : 502);
       } catch (e) {
         return json({ ok: false, error: e.message });
