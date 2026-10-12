@@ -226,6 +226,37 @@ function classifyBased(based){
 }
 async function logFunnel(env, op, payload){ try { await rpc(env, op, payload); } catch (e) {} }
 
+// Check-in tracker (daily logs, weekly check-ins, weekly targets) lives in tg_logs,
+// behind its own SECURITY DEFINER function with the same token.
+async function logRpc(env, op, payload = {}) {
+  const r = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/tg_log_api`, {
+    method: 'POST',
+    headers: {
+      apikey: env.SUPABASE_KEY,
+      'Authorization': `Bearer ${env.SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ tok: env.TG_DB_TOKEN, op, payload }),
+  });
+  const txt = await r.text();
+  if (!r.ok) throw new Error(`log ${op} failed (${r.status}): ${txt.slice(0, 180)}`);
+  try { return JSON.parse(txt); } catch (e) { return null; }
+}
+const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+// A log entry is a flat object of short values — anything else is dropped.
+function cleanLog(data) {
+  const out = {};
+  if (!data || typeof data !== 'object') return out;
+  for (const [k, v] of Object.entries(data).slice(0, 60)) {
+    if (!/^[a-z0-9_]{1,32}$/.test(k)) continue;
+    if (v === null || v === '') continue;
+    if (typeof v === 'number' && isFinite(v)) out[k] = v;
+    else if (typeof v === 'boolean') out[k] = v;
+    else if (typeof v === 'string') out[k] = v.slice(0, 4000);
+  }
+  return out;
+}
+
 const slugify = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 
@@ -385,6 +416,14 @@ export default {
           if (url.searchParams.get('action') === 'resources') {
             return json({ resources: await rpc(env, 'setting_get', { k: RESOURCES_KEY }) });
           }
+          // Tracker: one client's logs, or the last log dates for the whole roster.
+          if (url.searchParams.get('action') === 'logs') {
+            const from = url.searchParams.get('from');
+            return json({ logs: await logRpc(env, 'list', { client_id: url.searchParams.get('id'), from: isDay(from) ? from : null }) });
+          }
+          if (url.searchParams.get('action') === 'recent') {
+            return json({ recent: await logRpc(env, 'recent') });
+          }
           return json({ clients: await rpc(env, 'list') });
         }
 
@@ -397,6 +436,14 @@ export default {
           if (action === 'resources_save') {
             const list = Array.isArray(body.resources) ? body.resources : [];
             return json({ ok: true, resources: await rpc(env, 'setting_set', { k: RESOURCES_KEY, v: list }) });
+          }
+
+          // Tracker: Julian sets weekly targets, and can correct any log.
+          if (action === 'log_save' || action === 'log_remove') {
+            if (!body.id || !isDay(body.day) || !['daily', 'weekly', 'target'].includes(body.kind)) return json({ error: 'bad log' }, 400);
+            const p = { client_id: body.id, kind: body.kind, day: body.day };
+            if (action === 'log_remove') return json({ ok: true, removed: await logRpc(env, 'remove', p) });
+            return json({ ok: true, log: await logRpc(env, 'upsert', { ...p, data: cleanLog(body.data) }) });
           }
 
           if (action === 'copy_save') {
@@ -631,6 +678,41 @@ export default {
         return json({ error: err.message }, 502);
       }
       return json({ error: 'Method not allowed' }, 405);
+    }
+
+    // ── A client's own check-ins (daily log + weekly check-in) ───────────────
+    // Same slug + PIN as /client and the same lockout. A client can read their
+    // targets but only write their own daily/weekly entries.
+    if (url.pathname === '/client-log') {
+      if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+      if (!env.SUPABASE_URL || !env.SUPABASE_KEY || !env.TG_DB_TOKEN) return json({ error: 'storage not configured' }, 503);
+      try {
+        const body = await request.json().catch(() => ({}));
+        const slug = String(body.slug || '').toLowerCase();
+        const c = slug ? await rpc(env, 'by_slug', { slug }) : null;
+        if (!c) return json({ error: 'not found' }, 404);
+        if (c.pin_locked_until && new Date(c.pin_locked_until) > new Date()) {
+          return json({ error: 'Too many tries. Try again in a few minutes.' }, 429);
+        }
+        if (!c.pin || String(body.pin || '').trim() !== String(c.pin)) {
+          const fails = (c.pin_fails || 0) + 1;
+          const patch = fails >= 8
+            ? { id: c.id, pin_fails: 0, pin_locked_until: new Date(Date.now() + 15 * 60 * 1000).toISOString() }
+            : { id: c.id, pin_fails: fails };
+          const upd = rpc(env, 'update', patch);
+          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(upd); else await upd;
+          return json({ error: "That code doesn't match." }, 401);
+        }
+        if (body.action === 'save') {
+          if (!['daily', 'weekly'].includes(body.kind) || !isDay(body.day)) return json({ error: 'bad entry' }, 400);
+          const log = await logRpc(env, 'upsert', { client_id: c.id, kind: body.kind, day: body.day, data: cleanLog(body.data) });
+          return json({ ok: true, log });
+        }
+        const from = isDay(body.from) ? body.from : null;
+        return json({ logs: await logRpc(env, 'list', { client_id: c.id, from }) });
+      } catch (err) {
+        return json({ error: err.message }, 502);
+      }
     }
 
     // ── Funnel tracking: powers the funnel dashboard. Same passcode as the roster. ──
