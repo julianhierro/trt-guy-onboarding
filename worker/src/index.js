@@ -247,7 +247,7 @@ const isDay = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 function cleanLog(data) {
   const out = {};
   if (!data || typeof data !== 'object') return out;
-  for (const [k, v] of Object.entries(data).slice(0, 60)) {
+  for (const [k, v] of Object.entries(data).slice(0, 160)) {
     if (!/^[a-z0-9_]{1,32}$/.test(k)) continue;
     if (v === null || v === '') continue;
     if (typeof v === 'number' && isFinite(v)) out[k] = v;
@@ -440,7 +440,7 @@ export default {
 
           // Tracker: Julian sets weekly targets, and can correct any log.
           if (action === 'log_save' || action === 'log_remove') {
-            if (!body.id || !isDay(body.day) || !['daily', 'weekly', 'target'].includes(body.kind)) return json({ error: 'bad log' }, 400);
+            if (!body.id || !isDay(body.day) || !['daily', 'weekly', 'target', 'training'].includes(body.kind)) return json({ error: 'bad log' }, 400);
             const p = { client_id: body.id, kind: body.kind, day: body.day };
             if (action === 'log_remove') return json({ ok: true, removed: await logRpc(env, 'remove', p) });
             return json({ ok: true, log: await logRpc(env, 'upsert', { ...p, data: cleanLog(body.data) }) });
@@ -687,7 +687,15 @@ export default {
       if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
       if (!env.SUPABASE_URL || !env.SUPABASE_KEY || !env.TG_DB_TOKEN) return json({ error: 'storage not configured' }, 503);
       try {
-        const body = await request.json().catch(() => ({}));
+        // Progress pics arrive as multipart (slug, pin, file); everything else is JSON.
+        let body = {}, file = null;
+        if ((request.headers.get('Content-Type') || '').includes('multipart/form-data')) {
+          const fd = await request.formData();
+          body = { slug: fd.get('slug'), pin: fd.get('pin'), action: 'photo' };
+          file = fd.get('file');
+        } else {
+          body = await request.json().catch(() => ({}));
+        }
         const slug = String(body.slug || '').toLowerCase();
         const c = slug ? await rpc(env, 'by_slug', { slug }) : null;
         if (!c) return json({ error: 'not found' }, 404);
@@ -703,8 +711,13 @@ export default {
           if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(upd); else await upd;
           return json({ error: "That code doesn't match." }, 401);
         }
+        if (body.action === 'photo') {
+          if (!file || typeof file === 'string') return json({ error: 'no file' }, 400);
+          if (!/^image\//.test(file.type || '') || file.size > 12 * 1024 * 1024) return json({ error: 'Images up to 12 MB only.' }, 400);
+          return json({ ok: true, url: await storeFile(env, url.origin, 'progress/' + c.slug, file) });
+        }
         if (body.action === 'save') {
-          if (!['daily', 'weekly'].includes(body.kind) || !isDay(body.day)) return json({ error: 'bad entry' }, 400);
+          if (!['daily', 'weekly', 'training'].includes(body.kind) || !isDay(body.day)) return json({ error: 'bad entry' }, 400);
           const log = await logRpc(env, 'upsert', { client_id: c.id, kind: body.kind, day: body.day, data: cleanLog(body.data) });
           return json({ ok: true, log });
         }
