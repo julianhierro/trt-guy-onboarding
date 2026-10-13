@@ -428,6 +428,16 @@ export default {
         }
 
         if (request.method === 'POST') {
+          // Pharmacology timeline uploads (labs, photos) from the manager: multipart, returns a URL.
+          if ((request.headers.get('Content-Type') || '').includes('multipart/form-data')) {
+            const fd = await request.formData();
+            const file = fd.get('file');
+            const kind = fd.get('kind') === 'photo' ? 'photos' : 'labs';
+            if (!file || typeof file === 'string') return json({ error: 'no file' }, 400);
+            if (!/^(image\/|application\/pdf)/.test(file.type || '') || file.size > 25 * 1024 * 1024) return json({ error: 'Images or PDFs up to 25 MB only.' }, 400);
+            const slug = slugify(fd.get('slug') || 'client') || 'client';
+            return json({ ok: true, url: await storeFile(env, url.origin, `coach/${slug}/${kind}`, file), name: file.name || '', type: file.type || '' });
+          }
           let body = {};
           try { body = await request.json(); } catch (e) { return json({ error: 'invalid json' }, 400); }
           const action = body.action || 'save';
@@ -440,7 +450,7 @@ export default {
 
           // Tracker: Julian sets weekly targets, and can correct any log.
           if (action === 'log_save' || action === 'log_remove') {
-            if (!body.id || !isDay(body.day) || !['daily', 'weekly', 'target', 'training'].includes(body.kind)) return json({ error: 'bad log' }, 400);
+            if (!body.id || !isDay(body.day) || !['daily', 'weekly', 'target', 'training', 'files'].includes(body.kind)) return json({ error: 'bad log' }, 400);
             const p = { client_id: body.id, kind: body.kind, day: body.day };
             if (action === 'log_remove') return json({ ok: true, removed: await logRpc(env, 'remove', p) });
             return json({ ok: true, log: await logRpc(env, 'upsert', { ...p, data: cleanLog(body.data) }) });
