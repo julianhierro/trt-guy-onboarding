@@ -421,6 +421,10 @@ export default {
             const from = url.searchParams.get('from');
             return json({ logs: await logRpc(env, 'list', { client_id: url.searchParams.get('id'), from: isDay(from) ? from : null }) });
           }
+          // Exercises Julian adds to the library himself (on top of the training sheet's Reference list).
+          if (url.searchParams.get('action') === 'exlib') {
+            return json({ lib: (await rpc(env, 'setting_get', { k: 'ex_custom' })) || {} });
+          }
           if (url.searchParams.get('action') === 'recent') {
             return json({ recent: await logRpc(env, 'recent') });
           }
@@ -454,6 +458,11 @@ export default {
             const p = { client_id: body.id, kind: body.kind, day: body.day };
             if (action === 'log_remove') return json({ ok: true, removed: await logRpc(env, 'remove', p) });
             return json({ ok: true, log: await logRpc(env, 'upsert', { ...p, data: cleanLog(body.data) }) });
+          }
+
+          if (action === 'exlib_save') {
+            const lib = body.lib && typeof body.lib === 'object' ? body.lib : {};
+            return json({ ok: true, lib: await rpc(env, 'setting_set', { k: 'ex_custom', v: lib }) });
           }
 
           if (action === 'copy_save') {
