@@ -381,9 +381,9 @@ async function importIntake(env, { email, name, phone, contactId }) {
   return { existed: false, client };
 }
 
-// Automatic intake sync. Every GHL contact tagged client-onboarded lands on the
-// roster as a lead without anyone pressing Import. Runs on the cron trigger and
-// whenever the manager loads the roster.
+// Backstop sync. Intake submissions add themselves (addIntakeToRoster); this
+// catches anything that slipped through — every GHL contact tagged
+// client-onboarded lands on the roster as a lead. Runs when the manager loads.
 //
 // `intake_sync_seen` (tg_settings) holds every contact id already handled, so a
 // client Julian deletes from the roster is not re-added, and the old test
@@ -409,6 +409,20 @@ async function syncIntakes(env) {
   }
   if (contacts.length) await rpc(env, 'setting_set', { k: SYNC_KEY, v: [...seen] });
   return added;
+}
+
+// Called the moment an intake form is submitted: put that client on the roster
+// and mark the contact handled, so the roster-load sync never adds them twice.
+async function addIntakeToRoster(env, { email, name, phone, contactId }) {
+  try {
+    if (!env.SUPABASE_URL || !env.SUPABASE_KEY || !env.TG_DB_TOKEN) return;
+    await importIntake(env, { email, name, phone, contactId });
+    const seen = (await rpc(env, 'setting_get', { k: SYNC_KEY })) || [];
+    if (Array.isArray(seen) && !seen.includes(contactId)) {
+      seen.push(contactId);
+      await rpc(env, 'setting_set', { k: SYNC_KEY, v: seen });
+    }
+  } catch (e) {}
 }
 
 export default {
@@ -1145,6 +1159,9 @@ export default {
               emailOk = er.ok;
             }
           } catch (e) {}
+
+          // 5) Add them to the client roster (after the note, so the transcript comes along).
+          await addIntakeToRoster(env, { email, name: clientName, phone: (form.get('phone') || '').toString().trim(), contactId });
         })();
         if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(followUp); else await followUp;
 
@@ -1297,14 +1314,14 @@ export default {
         }
       } catch (e) {}
 
+      // 4) Add them to the client roster.
+      const rosterAdd = addIntakeToRoster(env, { email, name: clientName, phone: (form.get('phone') || '').toString().trim(), contactId });
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(rosterAdd); else await rosterAdd;
+
       return json({ success: true, contactId, note: noteOk, emailed: emailOk, photos: Object.keys(poseUrls).length, bloodwork: bloodUrls.length, uploadErrors });
     } catch (err) {
       return json({ error: err.message }, 500);
     }
   },
 
-  // Cron (wrangler.toml [triggers]): add new intakes to the roster automatically.
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(syncIntakes(env).catch(() => {}));
-  },
 };
