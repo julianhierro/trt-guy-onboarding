@@ -18,3 +18,7 @@ META_PIXEL_ID = "1112141834609992"
 NOTIFY_EMAIL = "julian@trt-guy.com"
 EMAIL_FROM = "TRT Guy <julian@trt-guy.com>"
 SUPABASE_URL = "https://nmxrdxkwfuxomytthmfj.supabase.co"
+
+# Auto-add new intakes (GHL tag client-onboarded) to the client roster.
+[triggers]
+crons = ["*/5 * * * *"]

@@ -355,6 +355,62 @@ async function ghlTranscript(env, contactId) {
   } catch (e) { return ''; }
 }
 
+// Add (or refresh) one finished intake on the roster. Shared by the manager's
+// Import button and the automatic sync below.
+async function importIntake(env, { email, name, phone, contactId }) {
+  email = String(email || '').toLowerCase().trim();
+  if (!email) throw new Error('email required');
+  const now = new Date().toISOString();
+  const transcript = contactId ? await ghlTranscript(env, contactId) : '';
+  const intake = { source: 'GHL intake', at: now, transcript };
+  const existing = await rpc(env, 'by_email', { email });
+  if (existing) {
+    const client = await rpc(env, 'update', {
+      id: existing.id, intake, intake_at: now,
+      ghl_contact_id: contactId || existing.ghl_contact_id || null,
+      phone: existing.phone || phone || null,
+    });
+    return { existed: true, client };
+  }
+  const client = await rpc(env, 'insert', await seedFromTemplate(env, {
+    slug: await uniqueSlug(env, name || email, null),
+    name: name || email, email, phone: phone || null,
+    status: 'lead', pin: newPin(), intake, intake_at: now,
+    ghl_contact_id: contactId || null,
+  }));
+  return { existed: false, client };
+}
+
+// Automatic intake sync. Every GHL contact tagged client-onboarded lands on the
+// roster as a lead without anyone pressing Import. Runs on the cron trigger and
+// whenever the manager loads the roster.
+//
+// `intake_sync_seen` (tg_settings) holds every contact id already handled, so a
+// client Julian deletes from the roster is not re-added, and the old test
+// contacts that predate the sync were marked seen when it was switched on.
+const SYNC_KEY = 'intake_sync_seen';
+async function syncIntakes(env) {
+  const seenList = (await rpc(env, 'setting_get', { k: SYNC_KEY })) || [];
+  const seen = new Set(Array.isArray(seenList) ? seenList : []);
+  const r = await ghl(env, 'POST', '/contacts/search', {
+    locationId: env.LOCATION_ID, pageLimit: 100, page: 1,
+    sort: [{ field: 'dateUpdated', direction: 'desc' }],
+    filters: [{ field: 'tags', operator: 'eq', value: 'client-onboarded' }],
+  });
+  if (!r.ok) throw new Error(`GHL search failed (${r.status})`);
+  const contacts = ((await r.json()).contacts || []).filter(c => c.id && !seen.has(c.id));
+  const added = [];
+  for (const c of contacts) {
+    if (!c.email) { seen.add(c.id); continue; }
+    const name = [c.firstName, c.lastName].filter(Boolean).join(' ') || c.contactName || '';
+    const res = await importIntake(env, { email: c.email, name, phone: c.phone, contactId: c.id });
+    seen.add(c.id);
+    added.push({ email: c.email, name, existed: res.existed });
+  }
+  if (contacts.length) await rpc(env, 'setting_set', { k: SYNC_KEY, v: [...seen] });
+  return added;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -428,7 +484,10 @@ export default {
           if (url.searchParams.get('action') === 'recent') {
             return json({ recent: await logRpc(env, 'recent') });
           }
-          return json({ clients: await rpc(env, 'list') });
+          // Pull in any new intakes first, so a fresh submission shows up the moment the roster opens.
+          let synced = [];
+          try { synced = await syncIntakes(env); } catch (e) {}
+          return json({ clients: await rpc(env, 'list'), synced });
         }
 
         if (request.method === 'POST') {
@@ -489,26 +548,9 @@ export default {
 
           // Import a finished intake: contact details + the transcript note GHL holds.
           if (action === 'import') {
-            const email = String(body.email || '').toLowerCase().trim();
-            if (!email) return json({ error: 'email required' }, 400);
-            const transcript = body.contactId ? await ghlTranscript(env, body.contactId) : '';
-            const intake = { source: 'GHL intake', at: now, transcript };
-            const existing = await rpc(env, 'by_email', { email });
-            if (existing) {
-              const client = await rpc(env, 'update', {
-                id: existing.id, intake, intake_at: now,
-                ghl_contact_id: body.contactId || existing.ghl_contact_id || null,
-                phone: existing.phone || body.phone || null,
-              });
-              return json({ ok: true, existed: true, client });
-            }
-            const client = await rpc(env, 'insert', await seedFromTemplate(env, {
-              slug: await uniqueSlug(env, body.name || email, null),
-              name: body.name || email, email, phone: body.phone || null,
-              status: 'lead', pin: newPin(), intake, intake_at: now,
-              ghl_contact_id: body.contactId || null,
-            }));
-            return json({ ok: true, client });
+            if (!body.email) return json({ error: 'email required' }, 400);
+            const res = await importIntake(env, { email: body.email, name: body.name, phone: body.phone, contactId: body.contactId });
+            return json({ ok: true, ...res });
           }
 
           // Create / update.
@@ -1259,5 +1301,10 @@ export default {
     } catch (err) {
       return json({ error: err.message }, 500);
     }
+  },
+
+  // Cron (wrangler.toml [triggers]): add new intakes to the roster automatically.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(syncIntakes(env).catch(() => {}));
   },
 };
