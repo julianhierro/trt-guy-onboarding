@@ -295,6 +295,7 @@ const publicClient = c => ({
 const TEMPLATE_KEY = 'plan_template';
 const COPY_KEY = 'client_copy';
 const RESOURCES_KEY = 'resources';
+const STATUSES_KEY = 'statuses';
 
 async function getTemplate(env) {
   try { return await rpc(env, 'setting_get', { k: TEMPLATE_KEY }); } catch (e) { return null; }
@@ -501,7 +502,9 @@ export default {
           // Pull in any new intakes first, so a fresh submission shows up the moment the roster opens.
           let synced = [];
           try { synced = await syncIntakes(env); } catch (e) {}
-          return json({ clients: await rpc(env, 'list'), synced });
+          let statuses = null;
+          try { statuses = await rpc(env, 'setting_get', { k: STATUSES_KEY }); } catch (e) {}
+          return json({ clients: await rpc(env, 'list'), synced, statuses });
         }
 
         if (request.method === 'POST') {
@@ -536,6 +539,18 @@ export default {
           if (action === 'exlib_save') {
             const lib = body.lib && typeof body.lib === 'object' ? body.lib : {};
             return json({ ok: true, lib: await rpc(env, 'setting_set', { k: 'ex_custom', v: lib }) });
+          }
+
+          // Julian's own pipeline stages. `lead` and `active` must stay: new applicants land
+          // as lead, and active is what counts as a paying client in the stats.
+          if (action === 'statuses_save') {
+            const seen = new Set();
+            const list = (Array.isArray(body.statuses) ? body.statuses : []).slice(0, 30).map(x => ({
+              key: slugify(x && x.key).slice(0, 30),
+              label: String((x && x.label) || '').trim().slice(0, 40),
+            })).filter(x => x.key && x.label && !seen.has(x.key) && seen.add(x.key));
+            if (!seen.has('lead') || !seen.has('active')) return json({ error: 'Lead and Client must stay' }, 400);
+            return json({ ok: true, statuses: await rpc(env, 'setting_set', { k: STATUSES_KEY, v: list }) });
           }
 
           if (action === 'copy_save') {
