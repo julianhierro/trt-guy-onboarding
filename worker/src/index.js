@@ -362,7 +362,7 @@ async function importIntake(env, { email, name, phone, contactId }) {
   if (!email) throw new Error('email required');
   const now = new Date().toISOString();
   const transcript = contactId ? await ghlTranscript(env, contactId) : '';
-  const intake = { source: 'GHL intake', at: now, transcript };
+  const intake = { source: 'GHL', at: now, transcript };
   const existing = await rpc(env, 'by_email', { email });
   if (existing) {
     const client = await rpc(env, 'update', {
@@ -962,6 +962,10 @@ export default {
       const lines = pairs.map(x => `${x.q}: ${x.a}`);
       const transcript = `TRT GUY — COACHING APPLICATION\nName: ${clientName}\nEmail: ${email}\nPhone: ${(d.phone || '').toString()}\n\n` + lines.join('\n');
       try { await ghl(env, 'POST', `/contacts/${cid}/notes`, { body: transcript }); } catch (e) {}
+      // Every applicant becomes a lead on the client roster (after the note, so the answers come along).
+      // Julian moves them to Client himself; an existing roster row keeps its status.
+      const rosterAdd = addIntakeToRoster(env, { email, name: (d.firstName || '').toString().trim(), phone: (d.phone || '').toString().trim(), contactId: cid });
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(rosterAdd); else await rosterAdd;
       // Slack notification (Incoming Webhook) — no-op until the SLACK_WEBHOOK secret is set.
       if (env.SLACK_WEBHOOK) {
         try {
